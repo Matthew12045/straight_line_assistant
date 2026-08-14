@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-PID & EKF Web Dashboard — Real-time visualization, tuning control & CSV data export.
+PID & EKF Web Dashboard — Real-time visualization, tuning control, CSV export & graph reset.
 
 Features:
 1. PID Dashboard with Rolling Mean Absolute Error (MAE) and parameter save capability.
 2. EKF Comparison Dashboard (Raw Odom vs Raw IMU vs EKF Filtered).
 3. Web interface with tab navigation and "Save Values" button to persist PID params.
 4. CSV Data Export for PID & EKF telemetry logs.
+5. "Reset Graph Data" button to clear graph history and restart time trace.
 
 Usage:
     ros2 run straight_line_assistant pid_dashboard
@@ -32,7 +33,7 @@ from sensor_msgs.msg import Imu
 _lock = threading.Lock()
 _start_time = None
 
-_pid_data_buffer = deque(maxlen=5000)  # ~250 seconds of telemetry
+_pid_data_buffer = deque(maxlen=5000)
 _pid_point_id = 0
 _recent_errors = deque(maxlen=100)
 
@@ -57,7 +58,7 @@ def euler_from_quaternion(q):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-# ── Web Interface HTML/JS (Single-page app with 2 tabs & CSV Export) ──
+# ── Web Interface HTML/JS (Single-page app with 2 tabs, CSV Export & Reset) ──
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -254,6 +255,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border: 1px solid #4ade8044;
   }
 
+  .btn-danger {
+    background: #3b1b24;
+    color: #f87171;
+    border: 1px solid #f8717144;
+  }
+
   .btn:hover { opacity: 0.9; }
 
   .heading-hold {
@@ -337,9 +344,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="action-bar">
       <div>
         <strong>PID Data Controls:</strong>
-        <span style="color:#889; font-size:12px; margin-left:8px;">Save values to YAML or download telemetry log as CSV.</span>
+        <span style="color:#889; font-size:12px; margin-left:8px;">Reset graphs, export telemetry CSV, or save parameters.</span>
       </div>
       <div class="btn-group">
+        <button class="btn btn-danger" onclick="resetGraphData()">🧹 Reset Graph Data</button>
         <button class="btn btn-secondary" onclick="window.location.href='/api/export_pid.csv'">📥 Export PID CSV</button>
         <button class="btn" onclick="savePIDValues()">💾 Save Values to YAML</button>
       </div>
@@ -388,10 +396,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     <div class="action-bar">
       <div>
-        <strong>EKF Sensor Telemetry Export:</strong>
-        <span style="color:#889; font-size:12px; margin-left:8px;">Download raw vs filtered EKF sensor data as CSV.</span>
+        <strong>EKF Sensor Telemetry Controls:</strong>
+        <span style="color:#889; font-size:12px; margin-left:8px;">Reset graphs or download EKF telemetry CSV.</span>
       </div>
-      <button class="btn btn-secondary" onclick="window.location.href='/api/export_ekf.csv'">📥 Export EKF CSV</button>
+      <div class="btn-group">
+        <button class="btn btn-danger" onclick="resetGraphData()">🧹 Reset Graph Data</button>
+        <button class="btn btn-secondary" onclick="window.location.href='/api/export_ekf.csv'">📥 Export EKF CSV</button>
+      </div>
     </div>
   </div>
 
@@ -483,6 +494,16 @@ function trim(chart) {
   }
 }
 
+function clearAllCharts() {
+  [chartPid1, chartPid2, chartEkfYaw, chartEkfW, chartEkfV].forEach(c => {
+    c.data.labels = [];
+    c.data.datasets.forEach(d => d.data = []);
+    c.update();
+  });
+  lastPidId = -1;
+  lastEkfId = -1;
+}
+
 async function pollPID() {
   try {
     const resp = await fetch('/api/pid?since=' + lastPidId);
@@ -568,6 +589,16 @@ async function savePIDValues() {
     alert(res.message);
   } catch (e) {
     alert('Failed to save parameters: ' + e);
+  }
+}
+
+async function resetGraphData() {
+  try {
+    const resp = await fetch('/api/reset_data', { method: 'POST' });
+    const res = await resp.json();
+    clearAllCharts();
+  } catch (e) {
+    alert('Failed to reset graph data: ' + e);
   }
 }
 
@@ -657,7 +688,7 @@ class PIDDashboardNode(Node):
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """HTTP Request Handler serving dashboard, JSON data, and CSV exports."""
+    """HTTP Request Handler serving dashboard, JSON data, CSV exports & graph reset."""
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -680,6 +711,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == '/api/save_params':
             self._handle_save_params()
+        elif parsed.path == '/api/reset_data':
+            self._handle_reset_data()
         else:
             self.send_error(404)
 
@@ -745,9 +778,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             content = """straight_line_assistant:
   ros__parameters:
-    kp: 1.5
+    kp: 1.2
     ki: 0.01
-    kd: 0.2
+    kd: 0.4
     integral_limit: 1.0
     angular_epsilon: 0.001
     key_timeout: 0.6
@@ -762,6 +795,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as e:
             res = {'status': 'error', 'message': f'Error saving params: {str(e)}'}
 
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(res).encode('utf-8'))
+
+    def _handle_reset_data(self):
+        global _pid_data_buffer, _ekf_data_buffer, _recent_errors
+        global _pid_point_id, _ekf_point_id, _start_time
+
+        with _lock:
+            _pid_data_buffer.clear()
+            _ekf_data_buffer.clear()
+            _recent_errors.clear()
+            _pid_point_id = 0
+            _ekf_point_id = 0
+            _start_time = time.time()
+
+        res = {'status': 'success', 'message': 'Graph data and time trace reset successfully.'}
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
