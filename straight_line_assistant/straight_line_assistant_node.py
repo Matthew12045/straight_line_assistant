@@ -128,7 +128,7 @@ class StraightLineAssistant(Node):
         self.declare_parameter('key_timeout', 0.6)       # seconds idle → stop
         self.declare_parameter('odom_timeout', 0.5)      # stale odom threshold
         self.declare_parameter('control_rate', 20.0)     # Hz
-        self.declare_parameter('odom_topic', '/odom')     # or '/odometry/filtered'
+        self.declare_parameter('odom_topic', '/odometry/filtered')     # or '/odom'
 
         # ── Read parameters ──────────────────────────────────────────
         self.kp = self.get_parameter('kp').value
