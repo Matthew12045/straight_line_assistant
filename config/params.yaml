@@ -8,3 +8,5 @@ straight_line_assistant:
     key_timeout: 0.6
     odom_timeout: 0.5
     control_rate: 20.0
+    odom_topic: "/odometry/filtered"
+
