@@ -128,6 +128,7 @@ class StraightLineAssistant(Node):
         self.declare_parameter('key_timeout', 0.6)       # seconds idle → stop
         self.declare_parameter('odom_timeout', 0.5)      # stale odom threshold
         self.declare_parameter('control_rate', 20.0)     # Hz
+        self.declare_parameter('odom_topic', '/odom')     # or '/odometry/filtered'
 
         # ── Read parameters ──────────────────────────────────────────
         self.kp = self.get_parameter('kp').value
@@ -138,10 +139,12 @@ class StraightLineAssistant(Node):
         self.key_timeout = self.get_parameter('key_timeout').value
         self.odom_timeout = self.get_parameter('odom_timeout').value
         control_rate = self.get_parameter('control_rate').value
+        odom_topic = self.get_parameter('odom_topic').value
 
         # ── Subscriber ───────────────────────────────────────────────
         self.odom_sub = self.create_subscription(
-            Odometry, '/odometry/filtered', self.odom_cb, 10)
+            Odometry, odom_topic, self.odom_cb, 10)
+        self.get_logger().info(f'Subscribing to odometry on: {odom_topic}')
 
         # ── Publishers ───────────────────────────────────────────
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
