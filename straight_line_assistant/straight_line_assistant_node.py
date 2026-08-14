@@ -19,6 +19,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Float32MultiArray
 
 if os.name != 'nt':
     import termios
@@ -142,8 +143,19 @@ class StraightLineAssistant(Node):
         self.odom_sub = self.create_subscription(
             Odometry, '/odometry/filtered', self.odom_cb, 10)
 
-        # ── Publisher ────────────────────────────────────────────────
+        # ── Publishers ───────────────────────────────────────────
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # PID debug topic — graph with:
+        #   rqt_plot /pid_debug/data[0]   # yaw error (rad)
+        #   rqt_plot /pid_debug/data[1]   # P term
+        #   rqt_plot /pid_debug/data[2]   # I term
+        #   rqt_plot /pid_debug/data[3]   # D term
+        #   rqt_plot /pid_debug/data[4]   # total correction (angular.z out)
+        #   rqt_plot /pid_debug/data[5]   # target yaw (rad)
+        #   rqt_plot /pid_debug/data[6]   # current yaw (rad)
+        self.pid_pub = self.create_publisher(
+            Float32MultiArray, '/pid_debug', 10)
 
         # ── Timing ───────────────────────────────────────────────────
         now = self.get_clock().now()
@@ -361,11 +373,26 @@ class StraightLineAssistant(Node):
             out_msg.angular.z = pid_correction
             self.prev_error = error
 
+            p_term = self.kp * error
+            i_term = self.ki * self.integral
+            d_term = self.kd * derivative
             self.get_logger().debug(
-                f'yaw_err={error:.4f}  P={self.kp*error:.4f}  '
-                f'I={self.ki*self.integral:.4f}  '
-                f'D={self.kd*derivative:.4f}  '
+                f'yaw_err={error:.4f}  P={p_term:.4f}  '
+                f'I={i_term:.4f}  D={d_term:.4f}  '
                 f'out={pid_correction:.4f}')
+
+            # Publish all signals for rqt_plot
+            dbg = Float32MultiArray()
+            dbg.data = [
+                float(error),           # [0] yaw error
+                float(p_term),          # [1] P term
+                float(i_term),          # [2] I term
+                float(d_term),          # [3] D term
+                float(pid_correction),  # [4] angular.z output
+                float(self.target_yaw), # [5] target yaw
+                float(self.current_yaw) # [6] current yaw
+            ]
+            self.pid_pub.publish(dbg)
         else:
             # Intentional turn, stopped, or stale odom → pass through
             out_msg.angular.z = self.control_angular_vel
