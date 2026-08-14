@@ -1,0 +1,35 @@
+# ROS 2 / colcon build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+*.egg-info/
+dist/
+*.egg
+
+# Archives — never commit zip files
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+
+# OS cruft
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Colcon / ament
+COLCON_IGNORE
+AMENT_IGNORE

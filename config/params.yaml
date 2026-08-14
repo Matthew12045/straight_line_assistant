@@ -1,0 +1,10 @@
+straight_line_assistant:
+  ros__parameters:
+    kp: 1.5
+    ki: 0.01
+    kd: 0.2
+    integral_limit: 1.0
+    max_angular_z: 1.5
+    angular_epsilon: 0.001
+    teleop_timeout: 0.5
+    odom_timeout: 0.5
