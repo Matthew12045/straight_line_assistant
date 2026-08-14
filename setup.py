@@ -31,6 +31,8 @@ setup(
             'straight_line_assistant.straight_line_assistant_node:main',
             'pid_dashboard = '
             'straight_line_assistant.pid_dashboard:main',
+            'ekf_node = '
+            'straight_line_assistant.ekf_node:main',
         ],
     },
 )
