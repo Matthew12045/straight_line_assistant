@@ -1,8 +1,8 @@
 straight_line_assistant:
   ros__parameters:
-    kp: 1.5
+    kp: 1.2
     ki: 0.01
-    kd: 0.2
+    kd: 0.4
     integral_limit: 1.0
     angular_epsilon: 0.001
     key_timeout: 0.6
