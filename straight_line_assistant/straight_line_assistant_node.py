@@ -315,19 +315,9 @@ class StraightLineAssistant(Node):
         if dt <= 0.0:
             dt = self.dt
 
-        # ── Key timeout watchdog ─────────────────────────────────────
-        key_elapsed = (now - self.last_key_time).nanoseconds / 1e9
-        if key_elapsed > self.key_timeout:
-            self.target_linear_vel = 0.0
-            self.target_angular_vel = 0.0
-            self.control_linear_vel = 0.0
-            self.control_angular_vel = 0.0
-            self.is_going_straight = False
-            self.target_yaw = None
-            self.integral = 0.0
-            self.prev_error = 0.0
-
         # ── Smooth velocity ramping (TurtleBot3-style) ───────────────
+        # No key timeout watchdog — TurtleBot3-style controls persist
+        # velocity until the user explicitly stops with s/space.
         self.control_linear_vel = make_simple_profile(
             self.control_linear_vel, self.target_linear_vel,
             LIN_VEL_STEP_SIZE / 2.0)
