@@ -4,7 +4,7 @@ straight_line_assistant:
     ki: 0.01
     kd: 0.2
     integral_limit: 1.0
-    max_angular_z: 1.5
     angular_epsilon: 0.001
-    teleop_timeout: 0.5
+    key_timeout: 0.6
     odom_timeout: 0.5
+    control_rate: 20.0
