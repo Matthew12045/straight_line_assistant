@@ -29,6 +29,8 @@ setup(
         'console_scripts': [
             'straight_line_assistant_node = '
             'straight_line_assistant.straight_line_assistant_node:main',
+            'pid_dashboard = '
+            'straight_line_assistant.pid_dashboard:main',
         ],
     },
 )
