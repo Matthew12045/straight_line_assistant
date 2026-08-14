@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-PID & EKF Web Dashboard — Real-time visualization & tuning control.
+PID & EKF Web Dashboard — Real-time visualization, tuning control & CSV data export.
 
 Features:
 1. PID Dashboard with Rolling Mean Absolute Error (MAE) and parameter save capability.
 2. EKF Comparison Dashboard (Raw Odom vs Raw IMU vs EKF Filtered).
 3. Web interface with tab navigation and "Save Values" button to persist PID params.
+4. CSV Data Export for PID & EKF telemetry logs.
 
 Usage:
     ros2 run straight_line_assistant pid_dashboard
@@ -31,14 +32,13 @@ from sensor_msgs.msg import Imu
 _lock = threading.Lock()
 _start_time = None
 
-_pid_data_buffer = deque(maxlen=2000)
+_pid_data_buffer = deque(maxlen=5000)  # ~250 seconds of telemetry
 _pid_point_id = 0
-_recent_errors = deque(maxlen=100)  # Rolling window for MAE
+_recent_errors = deque(maxlen=100)
 
-_ekf_data_buffer = deque(maxlen=2000)
+_ekf_data_buffer = deque(maxlen=5000)
 _ekf_point_id = 0
 
-# Stored latest sensor values for EKF sync
 _latest_odom_yaw = 0.0
 _latest_odom_v = 0.0
 _latest_odom_w = 0.0
@@ -57,7 +57,7 @@ def euler_from_quaternion(q):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-# ── Web Interface HTML/JS (Single-page app with 2 tabs) ──────────────
+# ── Web Interface HTML/JS (Single-page app with 2 tabs & CSV Export) ──
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -230,16 +230,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     margin-top: 16px;
   }
 
+  .btn-group {
+    display: flex;
+    gap: 10px;
+  }
+
   .btn {
     background: linear-gradient(135deg, #667eea, #764ba2);
     color: white;
     border: none;
-    padding: 10px 20px;
+    padding: 10px 18px;
     font-size: 13px;
     font-weight: 600;
     border-radius: 8px;
     cursor: pointer;
     transition: opacity 0.2s;
+
+  }
+
+  .btn-secondary {
+    background: #252a40;
+    color: #4ade80;
+    border: 1px solid #4ade8044;
   }
 
   .btn:hover { opacity: 0.9; }
@@ -324,10 +336,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     <div class="action-bar">
       <div>
-        <strong>Save Current PID Parameters:</strong>
-        <span style="color:#889; font-size:12px; margin-left:8px;">Persists parameters to <code>config/params.yaml</code> on disk.</span>
+        <strong>PID Data Controls:</strong>
+        <span style="color:#889; font-size:12px; margin-left:8px;">Save values to YAML or download telemetry log as CSV.</span>
       </div>
-      <button class="btn" onclick="savePIDValues()">💾 Save Values to YAML</button>
+      <div class="btn-group">
+        <button class="btn btn-secondary" onclick="window.location.href='/api/export_pid.csv'">📥 Export PID CSV</button>
+        <button class="btn" onclick="savePIDValues()">💾 Save Values to YAML</button>
+      </div>
     </div>
   </div>
 
@@ -369,6 +384,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="chart-container">
       <div class="chart-title">Linear Velocity Comparison v (Odom vs Filtered EKF)</div>
       <div class="chart-wrap"><canvas id="chartEkfV"></canvas></div>
+    </div>
+
+    <div class="action-bar">
+      <div>
+        <strong>EKF Sensor Telemetry Export:</strong>
+        <span style="color:#889; font-size:12px; margin-left:8px;">Download raw vs filtered EKF sensor data as CSV.</span>
+      </div>
+      <button class="btn btn-secondary" onclick="window.location.href='/api/export_ekf.csv'">📥 Export EKF CSV</button>
     </div>
   </div>
 
@@ -634,7 +657,7 @@ class PIDDashboardNode(Node):
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """HTTP Request Handler serving dashboard and JSON data APIs."""
+    """HTTP Request Handler serving dashboard, JSON data, and CSV exports."""
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -646,6 +669,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_json_buffer(_pid_data_buffer, parsed.query)
         elif path == '/api/ekf':
             self._serve_json_buffer(_ekf_data_buffer, parsed.query)
+        elif path == '/api/export_pid.csv':
+            self._export_pid_csv()
+        elif path == '/api/export_ekf.csv':
+            self._export_ekf_csv()
         else:
             self.send_error(404)
 
@@ -681,11 +708,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(points).encode('utf-8'))
 
+    def _export_pid_csv(self):
+        with _lock:
+            points = list(_pid_data_buffer)
+
+        csv_lines = ['timestamp_sec,yaw_error_rad,mae_rad,p_term,i_term,d_term,output_omega_rad_s,target_yaw_rad,current_yaw_rad']
+        for p in points:
+            csv_lines.append(f"{p['t']},{p['error']},{p['mae']},{p['p']},{p['i']},{p['d']},{p['output']},{p['target_yaw']},{p['current_yaw']}")
+
+        csv_data = '\n'.join(csv_lines)
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv')
+        self.send_header('Content-Disposition', 'attachment; filename="pid_telemetry.csv"')
+        self.end_headers()
+        self.wfile.write(csv_data.encode('utf-8'))
+
+    def _export_ekf_csv(self):
+        with _lock:
+            points = list(_ekf_data_buffer)
+
+        csv_lines = ['timestamp_sec,raw_odom_yaw,raw_imu_yaw,ekf_filtered_yaw,raw_odom_w,raw_imu_w,ekf_filtered_w,raw_odom_v,ekf_filtered_v']
+        for p in points:
+            csv_lines.append(f"{p['t']},{p['odom_yaw']},{p['imu_yaw']},{p['ekf_yaw']},{p['odom_w']},{p['imu_w']},{p['ekf_w']},{p['odom_v']},{p['ekf_v']}")
+
+        csv_data = '\n'.join(csv_lines)
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv')
+        self.send_header('Content-Disposition', 'attachment; filename="ekf_sensor_telemetry.csv"')
+        self.end_headers()
+        self.wfile.write(csv_data.encode('utf-8'))
+
     def _handle_save_params(self):
-        # Save current parameters to config/params.yaml
         yaml_path = os.path.expanduser('~/ros2_ws/src/straight_line_assistant/config/params.yaml')
         try:
-            # We fetch current params if possible or write clean params structure
             content = """straight_line_assistant:
   ros__parameters:
     kp: 1.5
