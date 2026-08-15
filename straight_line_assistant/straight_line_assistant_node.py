@@ -130,6 +130,12 @@ class StraightLineAssistant(Node):
         self.declare_parameter('control_rate', 20.0)     # Hz
         self.declare_parameter('odom_topic', '/odometry/filtered')     # or '/odom'
 
+        # ── Ident mode (open-loop data capture) ──────────────────────
+        self.declare_parameter('ident_mode', False)
+        self.declare_parameter('ident_amp', 0.4)      # rad/s, chirp amplitude
+        self.declare_parameter('ident_linear', 0.15)  # m/s, forward speed while walking
+        self.declare_parameter('ident_dur', 20.0)     # seconds
+
         # ── Read parameters ──────────────────────────────────────────
         self.kp = self.get_parameter('kp').value
         self.ki = self.get_parameter('ki').value
@@ -140,6 +146,10 @@ class StraightLineAssistant(Node):
         self.odom_timeout = self.get_parameter('odom_timeout').value
         control_rate = self.get_parameter('control_rate').value
         odom_topic = self.get_parameter('odom_topic').value
+        self.ident_mode = self.get_parameter('ident_mode').value
+        self.ident_amp = self.get_parameter('ident_amp').value
+        self.ident_linear = self.get_parameter('ident_linear').value
+        self.ident_dur = self.get_parameter('ident_dur').value
 
         # ── Subscriber ───────────────────────────────────────────────
         self.odom_sub = self.create_subscription(
@@ -162,6 +172,7 @@ class StraightLineAssistant(Node):
 
         # ── Timing ───────────────────────────────────────────────────
         now = self.get_clock().now()
+        self.ident_start = now
         self.last_key_time = now
         self.last_odom_time = None
         self.last_control_time = now
@@ -323,6 +334,27 @@ class StraightLineAssistant(Node):
     # ─────────────────────────────────────────────────────────────────
     def control_loop(self):
         now = self.get_clock().now()
+
+        if self.ident_mode:
+            t = (now - self.ident_start).nanoseconds / 1e9
+            if t > self.ident_dur:
+                self.cmd_pub.publish(Twist())          # auto-stop
+                return
+
+            fmin, fmax = 0.05, 1.0
+            f = fmin + (fmax - fmin) * (t / self.ident_dur)
+            phase = 2 * math.pi * (fmin * t + 0.5 * (f - fmin) * t)
+            omega = self.ident_amp * math.sin(phase)
+
+            out_msg = Twist()
+            out_msg.linear.x = self.ident_linear       # walk forward
+            out_msg.angular.z = omega                  # chirp, no PID
+            self.cmd_pub.publish(out_msg)
+
+            dbg = Float32MultiArray()                  # feed dashboard PID CSV
+            dbg.data = [0.0, 0.0, 0.0, 0.0, omega, 0.0, self.current_yaw]
+            self.pid_pub.publish(dbg)
+            return
 
         # Actual elapsed time (handles timer jitter)
         dt = (now - self.last_control_time).nanoseconds / 1e9

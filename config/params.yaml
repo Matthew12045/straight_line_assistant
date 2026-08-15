@@ -9,4 +9,8 @@ straight_line_assistant:
     odom_timeout: 0.5
     control_rate: 20.0
     odom_topic: "/odometry/filtered"
+    ident_mode: False
+    ident_amp: 0.4
+    ident_linear: 0.15
+    ident_dur: 20.0
 
