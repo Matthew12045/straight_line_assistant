@@ -196,6 +196,16 @@ class EKFNode(Node):
 
         self.filtered_odom_pub.publish(odom_msg)
 
+        transform = TransformStamped()
+        transform.header.stamp = odom_msg.header.stamp
+        transform.header.frame_id = 'odom'
+        transform.child_frame_id = 'base_footprint'
+        transform.transform.translation.x = odom_msg.pose.pose.position.x
+        transform.transform.translation.y = odom_msg.pose.pose.position.y
+        transform.transform.translation.z = odom_msg.pose.pose.position.z
+        transform.transform.rotation = odom_msg.pose.pose.orientation
+        self.tf_broadcaster.sendTransform(transform)
+
 
 def main(args=None):
     rclpy.init(args=args)

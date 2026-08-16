@@ -16,6 +16,7 @@ Usage:
 import json
 import math
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -27,6 +28,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 
 
 # ── Shared State ─────────────────────────────────────────────────────
@@ -272,6 +275,46 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .heading-hold.on  { background: #4ade8018; color: #4ade80; }
   .heading-hold.off { background: #f8717118; color: #f87171; }
+
+  .parameter-grid {
+    display: grid;
+    gap: 12px;
+  }
+
+  .parameter-row {
+    display: grid;
+    grid-template-columns: 150px 1fr 110px;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .parameter-row label {
+    color: #bbc;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .parameter-row input[type="range"] {
+    accent-color: #667eea;
+    width: 100%;
+  }
+
+  .parameter-number {
+    width: 100%;
+    background: #0a0b10;
+    color: #e0e0e0;
+    border: 1px solid #30344d;
+    border-radius: 6px;
+    padding: 7px 8px;
+    font-size: 13px;
+  }
+
+  .parameter-status {
+    color: #889;
+    font-size: 12px;
+    margin-top: 14px;
+    min-height: 16px;
+  }
 </style>
 </head>
 <body>
@@ -339,6 +382,33 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="chart-container">
       <div class="chart-title">PID Components (P, I, D)</div>
       <div class="chart-wrap"><canvas id="chartPid2"></canvas></div>
+    </div>
+
+    <div class="chart-container">
+      <div class="chart-title">Live PID Tuning</div>
+      <div class="parameter-grid">
+        <div class="parameter-row">
+          <label for="param-kp">kp</label>
+          <input id="param-kp-slider" type="range" min="0" max="10" step="0.01">
+          <input id="param-kp" class="parameter-number" type="number" min="0" max="10" step="0.01">
+        </div>
+        <div class="parameter-row">
+          <label for="param-ki">ki</label>
+          <input id="param-ki-slider" type="range" min="0" max="2" step="0.001">
+          <input id="param-ki" class="parameter-number" type="number" min="0" max="2" step="0.001">
+        </div>
+        <div class="parameter-row">
+          <label for="param-kd">kd</label>
+          <input id="param-kd-slider" type="range" min="0" max="10" step="0.01">
+          <input id="param-kd" class="parameter-number" type="number" min="0" max="10" step="0.01">
+        </div>
+        <div class="parameter-row">
+          <label for="param-integral_limit">integral_limit</label>
+          <input id="param-integral_limit-slider" type="range" min="0" max="10" step="0.01">
+          <input id="param-integral_limit" class="parameter-number" type="number" min="0" max="10" step="0.01">
+        </div>
+      </div>
+      <div id="paramStatus" class="parameter-status">Reading live values...</div>
     </div>
 
     <div class="action-bar">
@@ -602,6 +672,100 @@ async function resetGraphData() {
   }
 }
 
+const tuningParamNames = ['kp', 'ki', 'kd', 'integral_limit'];
+const tuningTimers = {};
+
+function setTuningControl(name, value) {
+  document.getElementById('param-' + name).value = value;
+  document.getElementById('param-' + name + '-slider').value = value;
+}
+
+function setTuningStatus(message, isError) {
+  const status = document.getElementById('paramStatus');
+  status.textContent = message;
+  status.style.color = isError ? '#f87171' : '#889';
+}
+
+async function getTuningParams() {
+  try {
+    const resp = await fetch('/api/get_params', { cache: 'no-store' });
+    const res = await resp.json();
+    if (res.status !== 'success') {
+      setTuningStatus(res.message, true);
+      return;
+    }
+    for (const name of tuningParamNames) {
+      if (Object.prototype.hasOwnProperty.call(res.params, name)) {
+        setTuningControl(name, res.params[name]);
+      }
+    }
+    setTuningStatus('Live values confirmed by straight_line_assistant.', false);
+  } catch (e) {
+    setTuningStatus('Could not read live PID parameters.', true);
+  }
+}
+
+async function setTuningParam(name, value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    setTuningStatus(name + ' must be a non-negative number.', true);
+    await getTuningParams();
+    return;
+  }
+
+  setTuningStatus('Applying ' + name + '...', false);
+  try {
+    const resp = await fetch('/api/set_param', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, value: numericValue }),
+    });
+    const res = await resp.json();
+    if (res.status === 'success') {
+      setTuningControl(name, res.value);
+      setTuningStatus(name + ' confirmed at ' + res.value, false);
+    } else {
+      setTuningStatus(res.message, true);
+      await getTuningParams();
+    }
+  } catch (e) {
+    setTuningStatus('Failed to set ' + name + ': ' + e, true);
+    await getTuningParams();
+  }
+}
+
+function debounceTuningParam(name, value) {
+  clearTimeout(tuningTimers[name]);
+  tuningTimers[name] = setTimeout(() => setTuningParam(name, value), 150);
+}
+
+for (const name of tuningParamNames) {
+  const slider = document.getElementById('param-' + name + '-slider');
+  const number = document.getElementById('param-' + name);
+  slider.addEventListener('input', () => {
+    number.value = slider.value;
+    debounceTuningParam(name, slider.value);
+  });
+  number.addEventListener('input', () => {
+    if (number.value !== '') {
+      slider.value = number.value;
+    }
+  });
+  number.addEventListener('blur', () => {
+    if (number.value !== '') {
+      setTuningParam(name, number.value);
+    }
+  });
+  number.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      number.blur();
+    }
+  });
+}
+
+getTuningParams();
+setInterval(getTuningParams, 1000);
 setInterval(() => { pollPID(); pollEKF(); }, 100);
 </script>
 </body>
@@ -620,6 +784,12 @@ class PIDDashboardNode(Node):
         self.declare_parameter('port', 8080)
         self.port = self.get_parameter('port').value
 
+        # Parameter services for the separate controller node.
+        self.set_parameters_client = self.create_client(
+            SetParameters, '/straight_line_assistant/set_parameters')
+        self.get_parameters_client = self.create_client(
+            GetParameters, '/straight_line_assistant/get_parameters')
+
         # Subscribers
         self.create_subscription(Float32MultiArray, '/pid_debug', self.pid_cb, 10)
         self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
@@ -627,6 +797,85 @@ class PIDDashboardNode(Node):
         self.create_subscription(Odometry, '/odometry/filtered', self.ekf_cb, 10)
 
         self.get_logger().info(f'Dashboard server starting on http://0.0.0.0:{self.port}')
+
+    def _call_parameter_service(self, client, request):
+        """Call a parameter service while the ROS executor handles its reply."""
+        if not client.wait_for_service(timeout_sec=0.5):
+            return None, 'straight_line_assistant is not running or its parameter service is unavailable'
+
+        future = client.call_async(request)
+        completed = threading.Event()
+        result = {}
+
+        def on_done(done_future):
+            try:
+                result['response'] = done_future.result()
+            except Exception as error:
+                result['error'] = str(error)
+            finally:
+                completed.set()
+
+        future.add_done_callback(on_done)
+        if not completed.wait(timeout=2.0):
+            return None, 'Timed out waiting for straight_line_assistant parameter service'
+        if 'error' in result:
+            return None, f'Parameter service call failed: {result["error"]}'
+        return result.get('response'), None
+
+    def get_live_params(self):
+        request = GetParameters.Request()
+        request.names = ['kp', 'ki', 'kd', 'integral_limit']
+        response, error = self._call_parameter_service(
+            self.get_parameters_client, request)
+        if error:
+            return None, error
+        if response is None or len(response.values) != len(request.names):
+            return None, 'Parameter service returned an incomplete response'
+
+        values = {}
+        for name, parameter_value in zip(request.names, response.values):
+            if parameter_value.type == ParameterType.PARAMETER_DOUBLE:
+                values[name] = parameter_value.double_value
+            elif parameter_value.type == ParameterType.PARAMETER_INTEGER:
+                values[name] = parameter_value.integer_value
+            else:
+                return None, f'Parameter {name} is not numeric'
+        return values, None
+
+    def set_live_param(self, name, value):
+        if name not in ('kp', 'ki', 'kd', 'integral_limit'):
+            return False, None, f'Unsupported PID parameter: {name}'
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return False, None, f'{name} must be a number'
+        if not math.isfinite(value) or value < 0.0:
+            return False, None, f'{name} must be finite and non-negative'
+
+        request = SetParameters.Request()
+        request.parameters = [Parameter(
+            name=name,
+            value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE,
+                double_value=value,
+            ),
+        )]
+        response, error = self._call_parameter_service(
+            self.set_parameters_client, request)
+        if error:
+            return False, None, error
+        if response is None or not response.results:
+            return False, None, 'Parameter service returned no result'
+        result = response.results[0]
+        if not result.successful:
+            return False, None, result.reason or f'Controller rejected {name}'
+
+        # SetParameters does not echo the value, so read it back before
+        # reporting success to the browser.
+        values, error = self.get_live_params()
+        if error:
+            return False, None, f'{name} was accepted but could not be confirmed: {error}'
+        return True, values[name], None
 
     def pid_cb(self, msg):
         global _pid_point_id
@@ -700,6 +949,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_json_buffer(_pid_data_buffer, parsed.query)
         elif path == '/api/ekf':
             self._serve_json_buffer(_ekf_data_buffer, parsed.query)
+        elif path == '/api/get_params':
+            self._handle_get_params()
         elif path == '/api/export_pid.csv':
             self._export_pid_csv()
         elif path == '/api/export_ekf.csv':
@@ -711,10 +962,67 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == '/api/save_params':
             self._handle_save_params()
+        elif parsed.path == '/api/set_param':
+            self._handle_set_param()
         elif parsed.path == '/api/reset_data':
             self._handle_reset_data()
         else:
             self.send_error(404)
+
+    def _send_json(self, response, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode('utf-8'))
+
+    def _handle_get_params(self):
+        node = _node_reference
+        if node is None:
+            self._send_json({
+                'status': 'error',
+                'message': 'Dashboard ROS node is not ready',
+            }, 503)
+            return
+
+        values, error = node.get_live_params()
+        if error:
+            self._send_json({'status': 'error', 'message': error}, 503)
+            return
+        self._send_json({'status': 'success', 'params': values})
+
+    def _handle_set_param(self):
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length)
+            data = json.loads(body.decode('utf-8'))
+            name = data['name']
+            value = data['value']
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+            self._send_json({
+                'status': 'error',
+                'message': f'Invalid request body: {error}',
+            }, 400)
+            return
+
+        node = _node_reference
+        if node is None:
+            self._send_json({
+                'status': 'error',
+                'message': 'Dashboard ROS node is not ready',
+            }, 503)
+            return
+
+        success, confirmed_value, error = node.set_live_param(name, value)
+        if not success:
+            status = 503 if 'unavailable' in error or 'Timed out' in error else 400
+            self._send_json({'status': 'error', 'message': error}, status)
+            return
+        self._send_json({
+            'status': 'success',
+            'name': name,
+            'value': confirmed_value,
+        })
 
     def _serve_html(self):
         self.send_response(200)
@@ -775,30 +1083,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _handle_save_params(self):
         yaml_path = os.path.expanduser('~/ros2_ws/src/straight_line_assistant/config/params.yaml')
+        node = _node_reference
+        if node is None:
+            self._send_json({
+                'status': 'error',
+                'message': 'Dashboard ROS node is not ready',
+            }, 503)
+            return
+
+        values, error = node.get_live_params()
+        if error:
+            self._send_json({
+                'status': 'error',
+                'message': f'Could not save: {error}',
+            }, 503)
+            return
+
         try:
-            content = """straight_line_assistant:
-  ros__parameters:
-    kp: 1.2
-    ki: 0.01
-    kd: 0.4
-    integral_limit: 1.0
-    angular_epsilon: 0.001
-    key_timeout: 0.6
-    odom_timeout: 0.5
-    control_rate: 20.0
-    odom_topic: "/odometry/filtered"
-"""
-            os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+            with open(yaml_path, 'r') as f:
+                content = f.read()
+
+            lines = []
+            saved_names = set()
+            for line in content.splitlines(keepends=True):
+                match = re.match(r'^(\s*)(kp|ki|kd|integral_limit):\s*.*?(\r?\n)?$', line)
+                if match:
+                    name = match.group(2)
+                    newline = match.group(3) or ''
+                    line = f'{match.group(1)}{name}: {values[name]}{newline}'
+                    saved_names.add(name)
+                lines.append(line)
+
+            missing = set(values) - saved_names
+            if missing:
+                raise ValueError(
+                    'params.yaml is missing: ' + ', '.join(sorted(missing)))
+
             with open(yaml_path, 'w') as f:
-                f.write(content)
-            res = {'status': 'success', 'message': f'Saved PID parameters to {yaml_path}'}
+                f.write(''.join(lines))
+            res = {'status': 'success', 'message': f'Saved live PID parameters to {yaml_path}'}
+            self._send_json(res)
         except Exception as e:
             res = {'status': 'error', 'message': f'Error saving params: {str(e)}'}
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(res).encode('utf-8'))
+            self._send_json(res, 500)
 
     def _handle_reset_data(self):
         global _pid_data_buffer, _ekf_data_buffer, _recent_errors

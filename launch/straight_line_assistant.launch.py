@@ -18,5 +18,12 @@ def generate_launch_description():
             name='straight_line_assistant',
             output='screen',
             parameters=[config],
+        ),
+        # ekf_node alone publishes /odometry/filtered; do not run robot_localization with this launch.
+        Node(
+            package='straight_line_assistant',
+            executable='ekf_node',
+            name='ekf_custom_node',
+            output='screen',
         )
     ])

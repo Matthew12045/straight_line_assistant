@@ -20,6 +20,7 @@ forward/backward without turning.
 ## Topics
 - Subscribes: `/odometry/filtered` (nav_msgs/Odometry)
 - Publishes: `/cmd_vel` (geometry_msgs/Twist)
+- The launch file starts the custom `ekf_node`, which is the only intended publisher of `/odometry/filtered`; do not also run `robot_localization` with this launch file.
 
 ## Requirements
 - ROS 2 (Humble, Iron, or Jazzy — no version-specific APIs are used)

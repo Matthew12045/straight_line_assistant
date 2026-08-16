@@ -20,6 +20,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray
+from rcl_interfaces.msg import SetParametersResult
 
 if os.name != 'nt':
     import termios
@@ -151,6 +152,8 @@ class StraightLineAssistant(Node):
         self.ident_linear = self.get_parameter('ident_linear').value
         self.ident_dur = self.get_parameter('ident_dur').value
 
+        self.add_on_set_parameters_callback(self._parameters_callback)
+
         # ── Subscriber ───────────────────────────────────────────────
         self.odom_sub = self.create_subscription(
             Odometry, odom_topic, self.odom_cb, 10)
@@ -196,6 +199,39 @@ class StraightLineAssistant(Node):
         # ── Show banner ──────────────────────────────────────────────
         print(BANNER)
         self._print_vel()
+
+    def _parameters_callback(self, parameters):
+        """Validate and apply parameters that affect the running controller."""
+        updates = {}
+        limits = {
+            'kp': 0.0,
+            'ki': 0.0,
+            'kd': 0.0,
+            'integral_limit': 0.0,
+            'angular_epsilon': 0.0,
+            'key_timeout': 0.0,
+            'odom_timeout': 0.0,
+        }
+
+        for parameter in parameters:
+            if parameter.name not in limits:
+                continue
+            try:
+                value = float(parameter.value)
+            except (TypeError, ValueError):
+                return SetParametersResult(
+                    successful=False,
+                    reason=f'{parameter.name} must be a number')
+            if not math.isfinite(value) or value < limits[parameter.name]:
+                return SetParametersResult(
+                    successful=False,
+                    reason=f'{parameter.name} must be finite and non-negative')
+            updates[parameter.name] = value
+
+        for name, value in updates.items():
+            setattr(self, name, value)
+
+        return SetParametersResult(successful=True, reason='Parameters updated')
 
     # ─────────────────────────────────────────────────────────────────
     # Keyboard handling (runs in a daemon thread)
@@ -362,9 +398,19 @@ class StraightLineAssistant(Node):
         if dt <= 0.0:
             dt = self.dt
 
+        # ── Idle timeout watchdog ───────────────────────────────────
+        if ((now - self.last_key_time).nanoseconds / 1e9
+                > self.key_timeout):
+            self.target_linear_vel = 0.0
+            self.target_angular_vel = 0.0
+            self.control_linear_vel = 0.0
+            self.control_angular_vel = 0.0
+            self.is_going_straight = False
+            self.target_yaw = None
+            self.integral = 0.0
+            self.prev_error = 0.0
+
         # ── Smooth velocity ramping (TurtleBot3-style) ───────────────
-        # No key timeout watchdog — TurtleBot3-style controls persist
-        # velocity until the user explicitly stops with s/space.
         self.control_linear_vel = make_simple_profile(
             self.control_linear_vel, self.target_linear_vel,
             LIN_VEL_STEP_SIZE / 2.0)
