@@ -76,7 +76,6 @@ or edited ahead of time in `config/params.yaml`.
 | `kd`              | 0.2     | Derivative gain                       |
 | `integral_limit`  | 1.0     | Anti-windup clamp                     |
 | `angular_epsilon` | 0.001   | "No turn" threshold (rad/s)           |
-| `key_timeout`     | 0.6     | Seconds of no input before auto-stop  |
 | `odom_timeout`    | 0.5     | Stale odometry threshold (seconds)    |
 | `control_rate`    | 20.0    | Control loop frequency (Hz)           |
 

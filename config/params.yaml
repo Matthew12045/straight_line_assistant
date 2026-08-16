@@ -5,7 +5,6 @@ straight_line_assistant:
     kd: 0.4
     integral_limit: 1.0
     angular_epsilon: 0.001
-    key_timeout: 0.6
     odom_timeout: 0.5
     control_rate: 20.0
     odom_topic: "/odometry/filtered"

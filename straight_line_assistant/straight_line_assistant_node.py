@@ -126,7 +126,6 @@ class StraightLineAssistant(Node):
         self.declare_parameter('kd', 0.2)
         self.declare_parameter('integral_limit', 1.0)   # anti-windup clamp
         self.declare_parameter('angular_epsilon', 1e-3)  # "no turn" threshold
-        self.declare_parameter('key_timeout', 0.6)       # seconds idle → stop
         self.declare_parameter('odom_timeout', 0.5)      # stale odom threshold
         self.declare_parameter('control_rate', 20.0)     # Hz
         self.declare_parameter('odom_topic', '/odometry/filtered')     # or '/odom'
@@ -143,7 +142,6 @@ class StraightLineAssistant(Node):
         self.kd = self.get_parameter('kd').value
         self.integral_limit = self.get_parameter('integral_limit').value
         self.angular_epsilon = self.get_parameter('angular_epsilon').value
-        self.key_timeout = self.get_parameter('key_timeout').value
         self.odom_timeout = self.get_parameter('odom_timeout').value
         control_rate = self.get_parameter('control_rate').value
         odom_topic = self.get_parameter('odom_topic').value
@@ -176,7 +174,6 @@ class StraightLineAssistant(Node):
         # ── Timing ───────────────────────────────────────────────────
         now = self.get_clock().now()
         self.ident_start = now
-        self.last_key_time = now
         self.last_odom_time = None
         self.last_control_time = now
         self.dt = 1.0 / control_rate
@@ -209,7 +206,6 @@ class StraightLineAssistant(Node):
             'kd': 0.0,
             'integral_limit': 0.0,
             'angular_epsilon': 0.0,
-            'key_timeout': 0.0,
             'odom_timeout': 0.0,
         }
 
@@ -268,25 +264,21 @@ class StraightLineAssistant(Node):
                     self.target_linear_vel = constrain(
                         self.target_linear_vel + LIN_VEL_STEP_SIZE,
                         -self.max_lin_vel, self.max_lin_vel)
-                    self.last_key_time = self.get_clock().now()
 
                 elif key == 'x':
                     self.target_linear_vel = constrain(
                         self.target_linear_vel - LIN_VEL_STEP_SIZE,
                         -self.max_lin_vel, self.max_lin_vel)
-                    self.last_key_time = self.get_clock().now()
 
                 elif key == 'a':
                     self.target_angular_vel = constrain(
                         self.target_angular_vel + ANG_VEL_STEP_SIZE,
                         -self.max_ang_vel, self.max_ang_vel)
-                    self.last_key_time = self.get_clock().now()
 
                 elif key == 'd':
                     self.target_angular_vel = constrain(
                         self.target_angular_vel - ANG_VEL_STEP_SIZE,
                         -self.max_ang_vel, self.max_ang_vel)
-                    self.last_key_time = self.get_clock().now()
 
                 elif key == 's' or key == ' ':
                     # Force stop
@@ -298,7 +290,6 @@ class StraightLineAssistant(Node):
                     self.target_yaw = None
                     self.integral = 0.0
                     self.prev_error = 0.0
-                    self.last_key_time = self.get_clock().now()
 
                 else:
                     # Unknown key — ignore
@@ -397,18 +388,6 @@ class StraightLineAssistant(Node):
         self.last_control_time = now
         if dt <= 0.0:
             dt = self.dt
-
-        # ── Idle timeout watchdog ───────────────────────────────────
-        if ((now - self.last_key_time).nanoseconds / 1e9
-                > self.key_timeout):
-            self.target_linear_vel = 0.0
-            self.target_angular_vel = 0.0
-            self.control_linear_vel = 0.0
-            self.control_angular_vel = 0.0
-            self.is_going_straight = False
-            self.target_yaw = None
-            self.integral = 0.0
-            self.prev_error = 0.0
 
         # ── Smooth velocity ramping (TurtleBot3-style) ───────────────
         self.control_linear_vel = make_simple_profile(
