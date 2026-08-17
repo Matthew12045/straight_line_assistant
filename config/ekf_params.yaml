@@ -1,0 +1,36 @@
+ekf_custom_node:
+  ros__parameters:
+    # Keep publish_tf False: TurtleBot3's OpenCR firmware already broadcasts
+    # the odom -> base_footprint transform, and enabling this would conflict
+    # with it. Only set to True if TurtleBot3's own TF broadcaster is disabled.
+    publish_tf: False
+
+    # Seconds without a message before a sensor is considered stale.
+    sensor_timeout: 0.5
+    # How often (Hz) the watchdog checks sensor freshness.
+    watchdog_rate: 2.0
+
+    # Frame names
+    odom_frame: "odom"
+    base_frame: "base_footprint"
+
+    # Input topics
+    odom_topic: "/odom"
+    imu_topic: "/imu"
+
+    # Process noise covariance Q (diagonal of [x, y, theta, v, omega])
+    q_x: 0.01
+    q_y: 0.01
+    q_theta: 0.02
+    q_v: 0.05
+    q_omega: 0.05
+
+    # Odom measurement noise R (diagonal of [v_odom, omega_odom])
+    # Higher noise on odom omega due to wheel slip.
+    r_odom_v: 0.05
+    r_odom_omega: 0.25
+
+    # IMU measurement noise R (diagonal of [theta_imu, omega_imu])
+    # Low noise on IMU gyro omega.
+    r_imu_theta: 0.05
+    r_imu_omega: 0.01

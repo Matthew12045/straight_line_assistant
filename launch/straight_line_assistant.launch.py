@@ -11,6 +11,12 @@ def generate_launch_description():
         'params.yaml'
     )
 
+    ekf_config = os.path.join(
+        get_package_share_directory('straight_line_assistant'),
+        'config',
+        'ekf_params.yaml'
+    )
+
     return LaunchDescription([
         Node(
             package='straight_line_assistant',
@@ -25,5 +31,6 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_custom_node',
             output='screen',
+            parameters=[ekf_config],
         )
     ])

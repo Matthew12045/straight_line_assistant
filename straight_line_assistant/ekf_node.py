@@ -43,6 +43,10 @@ def quaternion_from_euler(roll, pitch, yaw):
 
 
 class EKFNode(Node):
+    # Factor by which the published yaw covariance is inflated while the IMU
+    # is stale (yaw fusion lost -> heading estimate is much less trustworthy).
+    STALE_IMU_YAW_COV_INFLATION = 10.0
+
     def __init__(self):
         super().__init__('ekf_custom_node')
 
@@ -52,26 +56,58 @@ class EKFNode(Node):
         # ── State Covariance P ───────────────────────────────────────
         self.P = np.diag([0.1, 0.1, 0.1, 0.1, 0.1])
 
+        # ── Parameters ───────────────────────────────────────────────
+        # publish_tf: TurtleBot3's OpenCR firmware already broadcasts
+        # odom -> base_footprint, so keep this False unless that is disabled.
+        self.publish_tf = self.declare_parameter('publish_tf', False).value
+        self.sensor_timeout = self.declare_parameter('sensor_timeout', 0.5).value
+        self.watchdog_rate = self.declare_parameter('watchdog_rate', 2.0).value
+        self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
+        self.base_frame = self.declare_parameter('base_frame', 'base_footprint').value
+        self.odom_topic = self.declare_parameter('odom_topic', '/odom').value
+        self.imu_topic = self.declare_parameter('imu_topic', '/imu').value
+
+        q_x = self.declare_parameter('q_x', 0.01).value
+        q_y = self.declare_parameter('q_y', 0.01).value
+        q_theta = self.declare_parameter('q_theta', 0.02).value
+        q_v = self.declare_parameter('q_v', 0.05).value
+        q_omega = self.declare_parameter('q_omega', 0.05).value
+
+        r_odom_v = self.declare_parameter('r_odom_v', 0.05).value
+        r_odom_omega = self.declare_parameter('r_odom_omega', 0.25).value
+        r_imu_theta = self.declare_parameter('r_imu_theta', 0.05).value
+        r_imu_omega = self.declare_parameter('r_imu_omega', 0.01).value
+
         # ── Process Noise Covariance Q ───────────────────────────────
-        self.Q = np.diag([0.01, 0.01, 0.02, 0.05, 0.05])
+        self.Q = np.diag([q_x, q_y, q_theta, q_v, q_omega])
 
         # ── Measurement Noise Covariances R ──────────────────────────
         # Odom measurement: [v_odom, omega_odom]
-        self.R_odom = np.diag([0.05, 0.25])  # Higher noise on odom omega due to wheel slip
+        self.R_odom = np.diag([r_odom_v, r_odom_omega])  # Higher noise on odom omega due to wheel slip
 
         # IMU measurement: [theta_imu, omega_imu]
-        self.R_imu = np.diag([0.05, 0.01])   # Low noise on IMU gyro omega
+        self.R_imu = np.diag([r_imu_theta, r_imu_omega])  # Low noise on IMU gyro omega
 
         self.last_time = self.get_clock().now()
         self.initialized = False
 
+        # ── Sensor freshness tracking (watchdog) ────────────────────
+        self.last_odom_msg_time = None
+        self.last_imu_msg_time = None
+        self.odom_fresh = False
+        self.imu_fresh = False
+
         # ── Subscribers & Publishers ────────────────────────────────
-        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
-        self.create_subscription(Imu, '/imu', self.imu_callback, 10)
+        self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
+        self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
         self.filtered_odom_pub = self.create_publisher(Odometry, '/odometry/filtered', 10)
 
-        # TF Broadcaster for odom -> base_footprint / base_link
+        # TF Broadcaster for odom -> base_footprint (only used if publish_tf)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+
+        # Watchdog checks sensor freshness independently of the callbacks.
+        watchdog_period = 1.0 / max(self.watchdog_rate, 1e-3)
+        self.watchdog_timer = self.create_timer(watchdog_period, self.watchdog_callback)
 
         self.get_logger().info('Custom EKF Node initialized and ready.')
 
@@ -99,8 +135,49 @@ class EKFNode(Node):
         # Covariance prediction
         self.P = F @ self.P @ F.T + self.Q * dt
 
+    def _seconds_since(self, stamp):
+        """Seconds elapsed since a receipt timestamp (inf if never received)."""
+        if stamp is None:
+            return float('inf')
+        return (self.get_clock().now() - stamp).nanoseconds / 1e9
+
+    def _odom_is_fresh(self):
+        return self._seconds_since(self.last_odom_msg_time) <= self.sensor_timeout
+
+    def _imu_is_fresh(self):
+        return self._seconds_since(self.last_imu_msg_time) <= self.sensor_timeout
+
+    def watchdog_callback(self):
+        """Detect fresh<->stale transitions and report each exactly once."""
+        odom_fresh = self._odom_is_fresh()
+        imu_fresh = self._imu_is_fresh()
+
+        if odom_fresh != self.odom_fresh:
+            self.odom_fresh = odom_fresh
+            if odom_fresh:
+                msg = '/odom is publishing again - resuming /odometry/filtered output.'
+                self.get_logger().info(msg)
+            else:
+                msg = (f'/odom went stale (no messages for {self.sensor_timeout:.2f} s) - '
+                       'stopping /odometry/filtered output.')
+                self.get_logger().warn(msg)
+            print(f'[EKF WATCHDOG] {msg}', flush=True)
+
+        if imu_fresh != self.imu_fresh:
+            self.imu_fresh = imu_fresh
+            if imu_fresh:
+                msg = '/imu is publishing again - yaw fusion restored.'
+                self.get_logger().info(msg)
+            else:
+                msg = (f'/imu went stale (no messages for {self.sensor_timeout:.2f} s) - '
+                       'degrading to odom-only, yaw fusion lost '
+                       f'(published yaw covariance inflated {self.STALE_IMU_YAW_COV_INFLATION:.0f}x).')
+                self.get_logger().warn(msg)
+            print(f'[EKF WATCHDOG] {msg}', flush=True)
+
     def odom_callback(self, msg: Odometry):
-        current_time = self.get_clock().now()
+        self.last_odom_msg_time = self.get_clock().now()
+        current_time = self.last_odom_msg_time
         dt = (current_time - self.last_time).nanoseconds / 1e9
         self.last_time = current_time
 
@@ -136,6 +213,7 @@ class EKFNode(Node):
         self.publish_filtered_odom(msg.header.stamp)
 
     def imu_callback(self, msg: Imu):
+        self.last_imu_msg_time = self.get_clock().now()
         if not self.initialized:
             return
 
@@ -167,10 +245,14 @@ class EKFNode(Node):
         self.P = (np.eye(5) - K @ H) @ self.P
 
     def publish_filtered_odom(self, stamp):
+        # If wheel odometry is stale, stop publishing entirely.
+        if not self._odom_is_fresh():
+            return
+
         odom_msg = Odometry()
         odom_msg.header.stamp = stamp
-        odom_msg.header.frame_id = 'odom'
-        odom_msg.child_frame_id = 'base_footprint'
+        odom_msg.header.frame_id = self.odom_frame
+        odom_msg.child_frame_id = self.base_frame
 
         x, y, theta, v, omega = self.x.flatten()
 
@@ -187,6 +269,9 @@ class EKFNode(Node):
         cov[0] = self.P[0, 0]   # x
         cov[7] = self.P[1, 1]   # y
         cov[35] = self.P[2, 2]  # yaw
+        if not self._imu_is_fresh():
+            # IMU stale: yaw fusion lost, advertise much lower yaw confidence.
+            cov[35] *= self.STALE_IMU_YAW_COV_INFLATION
         odom_msg.pose.covariance = cov.tolist()
 
         cov_twist = np.zeros(36)
@@ -196,10 +281,15 @@ class EKFNode(Node):
 
         self.filtered_odom_pub.publish(odom_msg)
 
+        # TurtleBot3's OpenCR firmware already broadcasts odom -> base_footprint;
+        # only publish it ourselves when explicitly requested via publish_tf.
+        if not self.publish_tf:
+            return
+
         transform = TransformStamped()
         transform.header.stamp = odom_msg.header.stamp
-        transform.header.frame_id = 'odom'
-        transform.child_frame_id = 'base_footprint'
+        transform.header.frame_id = self.odom_frame
+        transform.child_frame_id = self.base_frame
         transform.transform.translation.x = odom_msg.pose.pose.position.x
         transform.transform.translation.y = odom_msg.pose.pose.position.y
         transform.transform.translation.z = odom_msg.pose.pose.position.z
