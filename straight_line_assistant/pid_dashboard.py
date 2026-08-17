@@ -676,8 +676,18 @@ const tuningParamNames = ['kp', 'ki', 'kd', 'integral_limit'];
 const tuningTimers = {};
 
 function setTuningControl(name, value) {
-  document.getElementById('param-' + name).value = value;
-  document.getElementById('param-' + name + '-slider').value = value;
+  const numberInput = document.getElementById('param-' + name);
+  const sliderInput = document.getElementById('param-' + name + '-slider');
+  // Don't clobber a field the user is still editing. The 1s live-poll
+  // would otherwise wipe a half-typed value (e.g. while typing "0.5"
+  // the poll resets the box back to "0."). Skip both paired controls so
+  // the number box and slider don't drift apart mid-edit; they get
+  // resynced on blur / on the next successful setTuningParam().
+  const editing = document.activeElement === numberInput ||
+                  document.activeElement === sliderInput;
+  if (editing) return;
+  numberInput.value = value;
+  sliderInput.value = value;
 }
 
 function setTuningStatus(message, isError) {
