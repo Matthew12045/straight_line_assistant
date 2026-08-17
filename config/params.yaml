@@ -13,3 +13,9 @@ straight_line_assistant:
     ident_linear: 0.15
     ident_dur: 20.0
 
+    # ── Tuned gains — VALIDATED ON HARDWARE 2026-08-17 ──────────────
+    # kp: 1.4  ki: 0.30  kd: 0.10  (set on robot's params.yaml, src+install)
+    # Measured @0.22 m/s: MAE 7.4 mrad, ss 3.3 mrad, no saturation/wag.
+    # Baseline 1.2/0.01/0.4 chattered at ~2.8 Hz from oversized kd.
+    # Ceilings: kp 2.2, ki 0.8, kd 0.3. Keep ki*integral_limit <= 0.5.
+
